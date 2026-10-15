@@ -1,73 +1,43 @@
 const PROVIDER = "sensenova"
-const BASE = "https://api.sensenova.cn/compatible-mode/v2"
-const VERSION = "0.1.0"
+const BASE = "https://token.sensenova.cn/v1"
+const VERSION = "0.2.0"
 
-// 官方兼容模式模型清单与价格:https://www.sensecore.cn/help/docs/model-as-a-service/nova/overview/compatible-mode
-// cost 为美元/百万 tokens,按 1 CNY = 0.14 USD 从人民币单价换算,仅供估算。
+// SenseNova Token Plan:https://github.com/OpenSenseNova/SenseNova6.8
+// 免费公测:每模型每 5 小时 1500 次调用。精确上下文/输出上限官方未公布,
+// 内置值按 6.7 同家族规格占位,登录后以 GET /models 返回的 context_length / max_output_tokens 为准。
 const MODELS = {
-  "SenseChat-5": {
-    name: "SenseChat 5",
-    description: "通用大模型(V5),128K 上下文,语言、知识、推理、数学、代码能力显著提升",
-    limit: { context: 128000, output: 16384 },
-    tool_call: true,
-    cost: { input: 1.12, output: 2.8 },
-  },
-  "SenseChat": {
-    name: "SenseChat (V4)",
-    description: "基础版本模型(V4),4K 上下文,通用能力强大",
-    limit: { context: 4096, output: 4096 },
-    tool_call: true,
-    cost: { input: 1.68, output: 1.68 },
-  },
-  "SenseChat-Turbo": {
-    name: "SenseChat Turbo",
-    description: "轻量模型,适用于快速问答场景",
-    limit: { context: 32768, output: 8192 },
-    tool_call: true,
-    cost: { input: 0.042, output: 0.084 },
-  },
-  "SenseChat-5-Cantonese": {
-    name: "SenseChat 5 Cantonese",
-    description: "32K 上下文,粤语对话理解",
-    limit: { context: 32768, output: 8192 },
-    tool_call: true,
-    cost: { input: 3.78, output: 3.78 },
-  },
-  "SenseNova-V6.5-Pro": {
-    name: "SenseNova V6.5 Pro",
-    description: "多模态旗舰模型,128K 上下文,图片、文本、视频原生统一",
-    limit: { context: 128000, output: 16384 },
+  "sensenova-6.8-flash-lite": {
+    name: "SenseNova 6.8 Flash Lite (Preview)",
+    description: "轻量多模态智能体预览版:自主规划、长程执行、多 Agent 协作、端到端交付",
+    limit: { context: 256000, output: 65536 },
+    reasoning: true,
     tool_call: true,
     modalities: { input: ["text", "image"] },
-    cost: { input: 0.42, output: 1.26 },
-  },
-  "SenseNova-V6.5-Turbo": {
-    name: "SenseNova V6.5 Turbo",
-    description: "多模态高效模型,128K 上下文,图片、文本、视频原生统一",
-    limit: { context: 128000, output: 16384 },
-    tool_call: true,
-    modalities: { input: ["text", "image"] },
-    cost: { input: 0.21, output: 0.63 },
-  },
-  "SenseChat-Vision": {
-    name: "SenseChat Vision",
-    description: "多模态模型,4K 上下文,图文感知",
-    limit: { context: 4096, output: 4096 },
-    tool_call: true,
-    modalities: { input: ["text", "image"] },
-    cost: { input: 1.4, output: 8.4 },
   },
 }
 
-// /models 返回的未知模型里,只有对话家族(SenseChat*/SenseNova*)才当作聊天模型,
-// 过滤掉 SenseEmbed 之类的非对话模型;未知机型用保守的上下文/输出上限。
-function entryFor(id) {
+// /models 返回的未知模型里,只有 SenseNova*/SenseChat* 家族才当作聊天模型;
+// 远端给出的 context_length / max_output_tokens / input_modalities 优先于内置占位值。
+function entryFor(id, remote = {}) {
   const known = MODELS[id]
-  if (known) return { ...known }
-  if (/^(sensechat|sensenova)-/i.test(id)) {
-    return { name: id, limit: { context: 32768, output: 8192 }, tool_call: true }
+  const entry = known ? { ...known } : /^(sensenova|sensechat)-/i.test(id)
+    ? { name: id, limit: { context: 32768, output: 8192 }, tool_call: true }
+    : undefined
+  if (!entry) return undefined
+  const ctx = remote.context_length ?? remote.max_context_length
+  const out = remote.max_output_tokens ?? remote.max_completion_tokens
+  if (typeof ctx === "number" || typeof out === "number") {
+    entry.limit = {
+      context: typeof ctx === "number" ? ctx : entry.limit.context,
+      output: typeof out === "number" ? out : entry.limit.output,
+    }
   }
-  return undefined
+  const inputs = remote.input_modalities ?? remote.inputModalities
+  if (Array.isArray(inputs) && inputs.includes("image")) {
+    entry.modalities = { input: ["text", "image"] }
+  }
+  if (!entry.name || entry.name === id) entry.name = remote.name ?? id
+  return entry
 }
 
 export const SenseNovaAuthPlugin = async () => ({
@@ -88,7 +58,7 @@ export const SenseNovaAuthPlugin = async () => ({
       {
         type: "api",
         label: "SenseNova API key",
-        placeholder: "在 platform.sensenova.cn 控制台「API-Key 管理」创建",
+        placeholder: "在 platform.sensenova.cn 控制台「API-Key 管理」创建(Token Plan)",
       },
     ],
     // 这个账号的每个请求带上 Bearer key
@@ -107,7 +77,7 @@ export const SenseNovaAuthPlugin = async () => ({
     },
   },
 
-  // 向 SenseNova 查询这个账号实际可用的模型,与已知清单合并;失败时保留原列表
+  // 向 SenseNova 查询这个账号实际可用的模型;失败时保留原列表
   provider: {
     id: PROVIDER,
     async models(provider, { auth } = {}) {
@@ -127,8 +97,8 @@ export const SenseNovaAuthPlugin = async () => ({
       }
       const merged = {}
       for (const m of data ?? []) {
-        const entry = entryFor(m.id)
-        if (entry) merged[m.id] = entry
+        const entry = entryFor(m.id ?? m, m)
+        if (entry) merged[m.id ?? m] = entry
       }
       return Object.keys(merged).length > 0 ? merged : provider.models
     },

@@ -10,14 +10,15 @@ assert.equal(typeof hooks.auth.loader, "function")
 assert.equal(hooks.provider.id, "sensenova")
 console.log("PASS plugin shape")
 
-// 1. config 钩子声明供应商与 7 个默认模型
+// 1. config 钩子声明供应商与默认模型
 const cfg = {}
 await hooks.config(cfg)
 const p = cfg.provider.sensenova
 assert.equal(p.name, "SenseNova")
 assert.equal(p.npm, "@ai-sdk/openai-compatible")
-assert.equal(p.api, "https://api.sensenova.cn/compatible-mode/v2")
-assert.equal(Object.keys(p.models).length, 7)
+assert.equal(p.api, "https://token.sensenova.cn/v1")
+assert.equal(Object.keys(p.models).length, 1)
+assert.ok(p.models["sensenova-6.8-flash-lite"])
 console.log("PASS config hook")
 
 // 2. config 不覆盖用户已有配置
@@ -28,24 +29,32 @@ console.log("PASS config keeps user config")
 
 // 3. models 钩子:未登录时回退原列表
 const fallback = await hooks.provider.models({ models: p.models }, {})
-assert.deepEqual(Object.keys(fallback).sort(), Object.keys(p.models).sort())
+assert.deepEqual(Object.keys(fallback), ["sensenova-6.8-flash-lite"])
 console.log("PASS models fallback without auth")
 
-// 4. models 钩子:/models 请求失败(401)时回退原列表且不抛错
+// 4. models 钩子:请求失败(401)时回退原列表且不抛错
 globalThis.fetch = async () => ({ ok: false, status: 401 })
 const fb401 = await hooks.provider.models({ models: p.models }, { auth: { type: "api", key: "k" } })
-assert.deepEqual(Object.keys(fb401).sort(), Object.keys(p.models).sort())
+assert.deepEqual(Object.keys(fb401), ["sensenova-6.8-flash-lite"])
 console.log("PASS models fallback on 401")
 
-// 5. models 钩子:合并远端列表,过滤非对话模型,未知 SenseNova* 机型以保守参数加入
+// 5. models 钩子:合并远端列表,过滤非对话模型,远程 metadata 覆盖占位上限
 globalThis.fetch = async () => ({
   ok: true,
-  json: async () => ({ data: [{ id: "SenseChat-5" }, { id: "SenseEmbed-xxx" }, { id: "SenseNova-V7-Pro" }] }),
+  json: async () => ({
+    data: [
+      { id: "sensenova-6.8-flash-lite", name: "SenseNova 6.8 Flash Lite", context_length: 131072, max_output_tokens: 32768 },
+      { id: "SenseEmbed-xxx" },
+      { id: "sensenova-u1-fast", context_length: 65536, input_modalities: ["text", "image"] },
+    ],
+  }),
 })
 const merged = await hooks.provider.models({ models: p.models }, { auth: { type: "api", key: "k" } })
-assert.deepEqual(Object.keys(merged), ["SenseChat-5", "SenseNova-V7-Pro"])
-assert.equal(merged["SenseChat-5"].limit.context, 128000)
-assert.equal(merged["SenseNova-V7-Pro"].limit.context, 32768)
+assert.deepEqual(Object.keys(merged), ["sensenova-6.8-flash-lite", "sensenova-u1-fast"])
+assert.equal(merged["sensenova-6.8-flash-lite"].limit.context, 131072)
+assert.equal(merged["sensenova-6.8-flash-lite"].limit.output, 32768)
+assert.equal(merged["sensenova-u1-fast"].limit.context, 65536)
+assert.deepEqual(merged["sensenova-u1-fast"].modalities.input, ["text", "image"])
 console.log("PASS models merge")
 
 // 6. loader:API key 账号注入 Bearer 头,并保留/覆盖传入头
@@ -55,8 +64,8 @@ globalThis.fetch = async (input, init) => {
   return { ok: true, status: 200 }
 }
 const loader = await hooks.auth.loader(async () => ({ type: "api", key: "test-key" }))
-assert.equal(loader.baseURL, "https://api.sensenova.cn/compatible-mode/v2")
-await loader.fetch("https://api.sensenova.cn/compatible-mode/v2/chat/completions", {
+assert.equal(loader.baseURL, "https://token.sensenova.cn/v1")
+await loader.fetch("https://token.sensenova.cn/v1/chat/completions", {
   method: "POST",
   headers: { "content-type": "application/json" },
 })
