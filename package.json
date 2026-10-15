@@ -1,0 +1,11 @@
+{
+  "name": "opencode-sensenova-auth",
+  "version": "0.1.0",
+  "description": "OpenCode provider plugin: SenseNova (日日新) API keys",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "sensenova"],
+  "license": "MIT",
+  "magpie": { "maxConcurrency": 4 }
+}
